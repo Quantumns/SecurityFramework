@@ -1,0 +1,6 @@
+{
+  "firewall": {
+    "defaultInbound": "Block",
+    "defaultOutbound": "Allow"
+  }
+}
