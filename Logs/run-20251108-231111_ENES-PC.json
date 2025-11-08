@@ -1,0 +1,26 @@
+﻿{
+    "runId":  "20251108-231111_ENES-PC",
+    "host":  "ENES-PC",
+    "mode":  "Enforce",
+    "scriptVersion":  "0.1.0",
+    "modules":  [
+                    {
+                        "module":  "Firewall",
+                        "outcome":  "Already Compliant",
+                        "details":  [
+                                        "Domain already compliant.",
+                                        "Private already compliant.",
+                                        "Public already compliant."
+                                    ],
+                        "cisMappings":  [
+                                            "4.4",
+                                            "4.5"
+                                        ],
+                        "msMappings":  [
+                                           "WindowsBaseline:Firewall"
+                                       ],
+                        "timestampUtc":  "2025-11-08T22:11:11.4134943Z"
+                    }
+                ],
+    "timestampUtc":  "2025-11-08T22:11:12.0475623Z"
+}
