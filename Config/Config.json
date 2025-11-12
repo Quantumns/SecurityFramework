@@ -1,6 +1,34 @@
 {
   "firewall": {
     "defaultInbound": "Block",
-    "defaultOutbound": "Allow"
+    "defaultOutbound": "Allow",
+
+    "logFilePath": "C:\\Windows\\System32\\LogFiles\\Firewall\\pfirewall.log",
+    "logMaxKB": 16384,
+    "logDropped": true,
+    "logAllowed": false,
+
+    "allowTeamViewerInbound": true, 
+    "rules": [
+      {
+        "name": "SF-Block-SMB-445",
+        "direction": "Inbound",
+        "protocol": "TCP",
+        "localPort": "445",
+        "action": "Block",
+        "profile": "Any",
+        "enabled": true
+      },
+      {
+        "name": "SF-Block-Telnet-23",
+        "direction": "Inbound",
+        "protocol": "TCP",
+        "localPort": "23",
+        "action": "Block",
+        "profile": "Any",
+        "enabled": true
+      }
+      
+    ]
   }
 }
