@@ -159,21 +159,27 @@ function Invoke-Framework {
   if (-not (Test-Path $Framework)) { Write-Error "Framework.ps1 not found at $Framework"; return }
   if (-not (Test-Path $ConfigPath)) { Write-Error "Config not found at $ConfigPath"; return }
 
-  # 1. Handle Elevation (Must happen before Backup because Backup needs Admin)
+  # 1. Elevation Check
   if ($Mode -eq 'Enforce') {
       if (-not (Test-IsAdmin)) {
-        Write-Host "[INFO] Relaunching elevated for Enforce..." -ForegroundColor Yellow
-        $args = "-NoProfile -ExecutionPolicy Bypass -File `"$Framework`" -Mode $Mode -Config `"$ConfigPath`""
-        if ($Modules.Count -gt 0) { $args += " -Modules " + ($Modules -join ',') }
-        Start-Process powershell -Verb RunAs -ArgumentList "-NoExit", $args -Wait
+        Write-Host "[INFO] Elevation required for Enforcement. Launching new window..." -ForegroundColor Yellow
+        
+        # We build the command string manually to ensure the pause happens inside the new window
+        $cmdString = "-NoProfile -ExecutionPolicy Bypass -Command `& '$Framework' -Mode $Mode -Config '$ConfigPath'"
+        if ($Modules.Count -gt 0) { $cmdString += " -Modules " + ($Modules -join ',') }
+        
+        # APPEND THE PAUSE HERE
+        $cmdString += "; Write-Host ''; Read-Host 'Press Enter to close this window...'"
+
+        Start-Process powershell -Verb RunAs -ArgumentList $cmdString -Wait
         return
       }
       
-      # 2. Safety Check: Ask about Backup BEFORE running any modules
-      Check-BackupStatus
+      # 2. Automatic Rollback (Only runs if Admin)
+      Invoke-RestorePoint
   }
 
-  # 3. Run Framework
+  # 3. Run Framework (Standard execution)
   $cmd = @(
     "-NoProfile","-ExecutionPolicy","Bypass",
     "-File", $Framework,
@@ -186,7 +192,7 @@ function Invoke-Framework {
   Write-Host "[RUN] $Mode $modLabel" -ForegroundColor Cyan
   & powershell @cmd
   
-  # 4. Keep window open if we just ran an enforcement
+  # 4. Keep window open if we just ran an enforcement (for the current window)
   if ($Mode -eq 'Enforce') {
       Write-Host "`n[INFO] Process Complete." -ForegroundColor Green
       Pause-UI
