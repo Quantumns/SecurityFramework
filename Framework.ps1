@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ProgressPreference    = "SilentlyContinue"
+$ProgressPreference    = "Continue"
 
 # ------------------------
 # Preflight checks
@@ -114,17 +114,28 @@ if ($Modules.Count -gt 0) {
 # Execute modules
 # ------------------------
 $results = [System.Collections.Generic.List[object]]::new()
+$totalModules = $moduleDirs.Count
+$counter = 0
 
 foreach ($dir in $moduleDirs) {
+  $counter++
   $moduleName = $dir.Name
-  $psm1       = Join-Path $dir.FullName "$moduleName.psm1"
+  $percent = [math]::Round(($counter / $totalModules) * 100)
+  
+  # --- PROGRESS BAR VISUAL ---
+  Write-Progress -Activity "Security Framework Execution" `
+    -Status "[$percent%] Processing module: $moduleName ($counter of $totalModules)" `
+    -PercentComplete $percent
+  # ---------------------------
+
+  $psm1 = Join-Path $dir.FullName "$moduleName.psm1"
 
   if (-not (Test-Path $psm1)) {
     Write-Warn ("Skipping {0}: no {0}.psm1" -f $moduleName)
     continue
   }
 
-  Write-Info ("Loading module: {0}" -f $moduleName)
+  # Write-Info ("Loading module: {0}" -f $moduleName) # Optional: Comment out to keep screen clean
   try {
     Import-Module $psm1 -Force -ErrorAction Stop
   } catch {
@@ -146,8 +157,9 @@ foreach ($dir in $moduleDirs) {
   }
 
   try {
-    Write-Info ("Running {0} in {1} mode" -f $moduleName, $Mode)
+    # Write-Info ("Running {0} in {1} mode" -f $moduleName, $Mode) # Optional
     $moduleResult = & $invokeName -Mode $Mode -Config $configObj
+    
     # Basic shape guard
     if (-not $moduleResult) {
       $moduleResult = [pscustomobject]@{
@@ -171,6 +183,9 @@ foreach ($dir in $moduleDirs) {
   }
 }
 
+# Close the progress bar when done
+Write-Progress -Activity "Security Framework Execution" -Completed
+
 # ------------------------
 # Write run summary
 # ------------------------
@@ -186,3 +201,9 @@ $runSummary = [pscustomobject]@{
 $logPath = Join-Path $logDir "run-$RunId.json"
 $runSummary | ConvertTo-Json -Depth 6 | Out-File -Encoding utf8 $logPath
 Write-Info "Run log written: $logPath"
+
+if ($Mode -eq 'Enforce') {
+    Write-Host "`n[INFO] Enforcement complete. Review the logs above." -ForegroundColor Green
+    Write-Host "Press Enter to close this window..."
+    Read-Host
+}

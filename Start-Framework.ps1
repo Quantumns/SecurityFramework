@@ -1,22 +1,130 @@
 <#  Start-Framework.ps1
     Menu launcher for the SecurityFramework.
-    - Detects modules in .\Modules\<ModuleName>\*.psm1 (and also .\Modules\*.psm1)
+    - Detects modules in .\Modules
+    - Automatic System Backup (Reg/Firewall) before Enforcement
     - Runs Audit/Enforce for all or a single module
-    - Shows last run summary with HK-style score (Skips excluded)
-    - Logs & Reports submenu: open run logs, open/tail/snapshot firewall log (robust input handling)
+    - Shows last run summary with HK-style score
+    - Logs & Reports submenu
     Windows PowerShell 5.1 compatible
 #>
 
 $ErrorActionPreference  = "Stop"
 $ProgressPreference     = "SilentlyContinue"
 
-# -------- paths (locked to the script location)
+# -------- Paths
 $Root        = $PSScriptRoot
 $Framework   = Join-Path $Root "Framework.ps1"
 $ModulesDir  = Join-Path $Root "Modules"
 $LogsDir     = Join-Path $Root "Logs"
+$BackupDir   = Join-Path $Root "Backups"
 $ConfigPath  = Join-Path $Root "Config\config.json"
 $FwLogPath   = "$env:SystemRoot\System32\LogFiles\Firewall\pfirewall.log"
+
+# ---------- Core Functions ----------
+
+function Ensure-Dirs {
+    if (-not (Test-Path $LogsDir))   { New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null }
+    if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null }
+}
+
+function Invoke-Backup {
+    Ensure-Dirs
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $currentBackup = Join-Path $BackupDir $timestamp
+    
+    try {
+        if (-not (Test-Path $currentBackup)) { New-Item -Path $currentBackup -ItemType Directory -Force | Out-Null }
+        
+        Write-Host "`n[BACKUP] Creating system rollback point..." -ForegroundColor Cyan
+        
+        # 1. Export Firewall Rules (JSON)
+        Get-NetFirewallRule | Select-Object DisplayName, Enabled, Direction, Action, Profile | ConvertTo-Json -Depth 2 | Out-File (Join-Path $currentBackup "FirewallRules.json")
+        
+        # 2. Export Critical Registry Keys (Reg Export)
+        $regExports = @(
+            @{ Name="AuditPol";  Path="HKLM\SECURITY\Policy\PolAdtEv" },
+            @{ Name="Lsa";       Path="HKLM\SYSTEM\CurrentControlSet\Control\Lsa" },
+            @{ Name="WinUpdate"; Path="HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" }
+        )
+
+        foreach ($reg in $regExports) {
+            $outFile = Join-Path $currentBackup "$($reg.Name).reg"
+            Start-Process "reg.exe" -ArgumentList "export `"$($reg.Path)`" `"$outFile`" /y" -Wait -WindowStyle Hidden
+        }
+        
+        Write-Host "   [OK] Rollback saved to: Backups\$timestamp" -ForegroundColor Green
+        Start-Sleep -Seconds 1
+        return $true
+    } catch {
+        Write-Host "   [ERROR] Backup failed: $($_.Exception.Message)" -ForegroundColor Red
+        Pause-UI
+        return $false
+    }
+}
+
+function Check-BackupStatus {
+    param([bool]$ReportOnly = $false)
+    Ensure-Dirs
+    
+    # Find newest backup folder
+    $lastBackup = Get-ChildItem $BackupDir -Directory | Sort-Object Name -Descending | Select-Object -First 1
+    
+    if ($ReportOnly) {
+        Write-Host "`n=== Backup Status ===" -ForegroundColor Cyan
+        if ($lastBackup) {
+            try {
+                $backupDate = [DateTime]::ParseExact($lastBackup.Name, "yyyyMMdd-HHmmss", $null)
+                $daysAgo = ((Get-Date) - $backupDate).Days
+                Write-Host "Last Backup: $($lastBackup.Name)"
+                Write-Host "Age:         $daysAgo days ago"
+                Write-Host "Location:    $($lastBackup.FullName)"
+            } catch {
+                Write-Host "Last Backup: $($lastBackup.Name) (Invalid Date Format)"
+            }
+        } else {
+            Write-Host "Last Backup: None found." -ForegroundColor Yellow
+        }
+        Pause-UI
+        return
+    }
+
+    # --- ENFORCE MODE LOGIC ---
+    $shouldCreate = $true
+    
+    if ($lastBackup) {
+        try {
+            $backupDate = [DateTime]::ParseExact($lastBackup.Name, "yyyyMMdd-HHmmss", $null)
+            $daysAgo = ((Get-Date) - $backupDate).Days
+            
+            Write-Host "`n[INFO] Last rollback point found: $daysAgo days ago ($($lastBackup.Name))" -ForegroundColor Cyan
+            
+            if ($daysAgo -lt 1) {
+                # Very recent backup (today)
+                $ans = Read-Host "Create ANOTHER backup before continuing? (y/N)"
+                if ($ans -ne 'y') { $shouldCreate = $false }
+            } else {
+                # Backup exists but is older than 1 day
+                $ans = Read-Host "Create a NEW backup now? (Y/n)"
+                if ($ans -eq 'n') { $shouldCreate = $false }
+            }
+        } catch {
+            # Corrupt folder name
+            Write-Host "`n[WARN] Last backup folder has invalid name format." -ForegroundColor Yellow
+            $ans = Read-Host "Create a fresh backup now? (Y/n)"
+            if ($ans -eq 'n') { $shouldCreate = $false }
+        }
+    } else {
+        # No backup at all
+        Write-Host "`n[WARN] NO PREVIOUS BACKUPS FOUND." -ForegroundColor Red
+        Write-Host "       It is highly recommended to create a rollback point." -ForegroundColor Yellow
+        $ans = Read-Host "Create backup now? (Y/n)"
+        if ($ans -eq 'n') { $shouldCreate = $false }
+    }
+
+    if ($shouldCreate) {
+        Invoke-Backup
+    }
+}
 
 function Pause-UI { [void](Read-Host "Press Enter to continue...") }
 
@@ -25,8 +133,6 @@ function Test-IsAdmin {
   $wp = New-Object Security.Principal.WindowsPrincipal($wi)
   return $wp.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 }
-
-function Ensure-LogsDir { if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null } }
 
 function Get-ModuleNames {
   $list = @()
@@ -37,7 +143,6 @@ function Get-ModuleNames {
     $display = if ($psm1) { [System.IO.Path]::GetFileNameWithoutExtension($psm1.Name) } else { $dir.Name }
     $list += [pscustomobject]@{ FolderName = $dir.Name; DisplayName = $display }
   }
-
   foreach ($f in Get-ChildItem -Path $ModulesDir -Filter *.psm1 -File -ErrorAction SilentlyContinue) {
     $nameNoExt = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
     $list += [pscustomobject]@{ FolderName = $nameNoExt; DisplayName = $nameNoExt }
@@ -54,14 +159,21 @@ function Invoke-Framework {
   if (-not (Test-Path $Framework)) { Write-Error "Framework.ps1 not found at $Framework"; return }
   if (-not (Test-Path $ConfigPath)) { Write-Error "Config not found at $ConfigPath"; return }
 
-  if ($Mode -eq 'Enforce' -and -not (Test-IsAdmin)) {
-    Write-Host "[INFO] Relaunching elevated for Enforce..." -ForegroundColor Yellow
-    $args = "-NoProfile -ExecutionPolicy Bypass -File `"$Framework`" -Mode $Mode -Config `"$ConfigPath`""
-    if ($Modules.Count -gt 0) { $args += " -Modules " + ($Modules -join ',') }
-    Start-Process powershell -Verb RunAs -ArgumentList $args | Out-Null
-    return
+  # 1. Handle Elevation (Must happen before Backup because Backup needs Admin)
+  if ($Mode -eq 'Enforce') {
+      if (-not (Test-IsAdmin)) {
+        Write-Host "[INFO] Relaunching elevated for Enforce..." -ForegroundColor Yellow
+        $args = "-NoProfile -ExecutionPolicy Bypass -File `"$Framework`" -Mode $Mode -Config `"$ConfigPath`""
+        if ($Modules.Count -gt 0) { $args += " -Modules " + ($Modules -join ',') }
+        Start-Process powershell -Verb RunAs -ArgumentList "-NoExit", $args -Wait
+        return
+      }
+      
+      # 2. Safety Check: Ask about Backup BEFORE running any modules
+      Check-BackupStatus
   }
 
+  # 3. Run Framework
   $cmd = @(
     "-NoProfile","-ExecutionPolicy","Bypass",
     "-File", $Framework,
@@ -73,6 +185,12 @@ function Invoke-Framework {
   $modLabel = if ($Modules.Count) { '[' + ($Modules -join ',') + ']' } else { '[All Modules]' }
   Write-Host "[RUN] $Mode $modLabel" -ForegroundColor Cyan
   & powershell @cmd
+  
+  # 4. Keep window open if we just ran an enforcement
+  if ($Mode -eq 'Enforce') {
+      Write-Host "`n[INFO] Process Complete." -ForegroundColor Green
+      Pause-UI
+  }
 }
 
 function Get-HKStyleScore {
@@ -169,78 +287,10 @@ function Show-LastRunSummary {
 
 # ---------- Logs & Reports utilities ----------
 
-function Copy-FirewallLogSnapshot {
-  param([string]$DestDir = $LogsDir, [string]$LogPath = $FwLogPath)
-  try {
-    Ensure-LogsDir
-    $stamp = (Get-Date -Format "yyyyMMdd-HHmmss")
-    $dest  = Join-Path $DestDir ("pfirewall-{0}.log" -f $stamp)
-    if (Test-Path $LogPath) { Copy-Item $LogPath $dest -Force; return $dest }
-  } catch { }
-  return $null
-}
-
 function Open-File-Notepad {
   param([Parameter(Mandatory)][string]$Path)
   if (-not (Test-Path $Path)) { Write-Host "File not found: $Path" -ForegroundColor Yellow; return }
   Start-Process notepad.exe -ArgumentList "`"$Path`""
-}
-
-function Open-File-NotepadElevated {
-  param([Parameter(Mandatory)][string]$Path)
-  if (-not (Test-Path $Path)) { Write-Host "File not found: $Path" -ForegroundColor Yellow; return }
-  Start-Process notepad.exe -Verb RunAs -ArgumentList "`"$Path`""
-}
-
-function Tail-File {
-  param(
-    [Parameter(Mandatory)][string]$Path,
-    [int]$Lines = 200
-  )
-  if (-not (Test-Path $Path)) { Write-Host "File not found: $Path" -ForegroundColor Yellow; return }
-  try {
-    Get-Content -Path $Path -Tail $Lines
-  } catch {
-    Write-Host ("Tail failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-  }
-}
-
-function Read-IntOrDefault {
-  param(
-    [string]$Prompt,
-    [int]$Default = 200,
-    [int]$Min = 1,
-    [int]$Max = 1000000
-  )
-  $raw = Read-Host $Prompt
-  if ($null -eq $raw) { return $Default }
-  $s = [string]$raw
-  if ([string]::IsNullOrWhiteSpace($s)) { return $Default }
-  if ($s -match "^\s*`u001A\s*$") { return $Default } # Ctrl+Z
-  if ($s -match "^\s*[qQ]\s*$") { return $Default }
-  $val = 0
-  if (-not [int]::TryParse($s.Trim(), [ref]$val)) { return $Default }
-  if ($val -lt $Min) { return $Min }
-  if ($val -gt $Max) { return $Max }
-  return $val
-}
-
-function Show-RunLogsBrowser {
-  Ensure-LogsDir
-  $files = Get-ChildItem $LogsDir -Filter "run-*.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-  if (-not $files -or $files.Count -eq 0) { Write-Host "No run logs found." -ForegroundColor Yellow; return }
-
-  Write-Host "`nAvailable run logs:" -ForegroundColor Cyan
-  for ($i=0; $i -lt $files.Count; $i++) {
-    Write-Host ("{0}) {1}" -f ($i+1), $files[$i].Name)
-  }
-  $raw = Read-Host "Pick log number to open (or Enter to cancel)"
-  if ([string]::IsNullOrWhiteSpace($raw)) { return }
-  $sel = 0
-  if (-not [int]::TryParse($raw.Trim(), [ref]$sel)) { Write-Host "Invalid selection." -ForegroundColor Yellow; return }
-  if ($sel -lt 1 -or $sel -gt $files.Count) { Write-Host "Out of range." -ForegroundColor Yellow; return }
-
-  Open-File-Notepad -Path $files[$sel-1].FullName
 }
 
 function Try-Open-FirewallLog {
@@ -248,26 +298,8 @@ function Try-Open-FirewallLog {
     Write-Host "Firewall log not found at: $FwLogPath" -ForegroundColor Yellow
     return
   }
-
-  $opened = $false
-  try { Start-Process notepad.exe -ArgumentList "`"$FwLogPath`""; $opened = $true } catch { $opened = $false }
-
-  if (-not $opened) {
-    Write-Host "Access denied or blocked opening the live firewall log." -ForegroundColor Yellow
-    Write-Host "1) Open with elevated Notepad (UAC prompt)"
-    Write-Host "2) Create a snapshot copy in Logs and open the copy"
-    Write-Host "3) Cancel"
-    $c = (Read-Host "Choose (1-3)").Trim()
-    switch ($c) {
-      '1' { try { Open-File-NotepadElevated -Path $FwLogPath } catch { Write-Host "Failed to open elevated: $($_.Exception.Message)" -ForegroundColor Red } }
-      '2' {
-        $copy = Copy-FirewallLogSnapshot
-        if ($copy) { Write-Host ("Snapshot created: {0}" -f $copy) -ForegroundColor DarkGray; Open-File-Notepad -Path $copy }
-        else { Write-Host "Snapshot failed." -ForegroundColor Yellow }
-      }
-      default { }
-    }
-  }
+  try { Start-Process notepad.exe -ArgumentList "`"$FwLogPath`"" } 
+  catch { Write-Host "Failed to open log. Try running as Admin." -ForegroundColor Red }
 }
 
 function Show-LogsMenu {
@@ -278,37 +310,22 @@ function Show-LogsMenu {
       Write-Host "Logs folder: $LogsDir"
       Write-Host ""
       Write-Host "1) Open LAST run report"
-      Write-Host "2) Browse and open a run report"
-      Write-Host "3) Open live firewall log (handles permissions)"
-      Write-Host "4) Tail firewall log (view last lines)"
-      Write-Host "5) Snapshot firewall log to Logs and open it"
-      Write-Host "6) Back"
+      Write-Host "2) Open live firewall log"
+      Write-Host "3) Check Backup Status"
+      Write-Host "4) Back"
       Write-Host ""
 
-      $opt = (Read-Host "Select option (1-6)").Trim()
+      $opt = (Read-Host "Select option (1-4)").Trim()
       switch ($opt) {
         '1' {
-          Ensure-LogsDir
+          Ensure-Dirs
           $last = Get-ChildItem $LogsDir -Filter "run-*.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($last) { Open-File-Notepad -Path $last.FullName } else { Write-Host "No run logs found." -ForegroundColor Yellow }
           Pause-UI
         }
-        '2' { Show-RunLogsBrowser; Pause-UI }
-        '3' { Try-Open-FirewallLog;  Pause-UI }
-        '4' {
-          if (-not (Test-Path $FwLogPath)) { Write-Host "Firewall log not found." -ForegroundColor Yellow; Pause-UI; continue }
-          $lines = Read-IntOrDefault -Prompt "Lines to show (default 200, 'q' to cancel)" -Default 200 -Min 1 -Max 100000
-          if ($lines -le 0) { Pause-UI; continue }
-          Tail-File -Path $FwLogPath -Lines $lines
-          Pause-UI
-        }
-        '5' {
-          $copy = Copy-FirewallLogSnapshot
-          if ($copy) { Write-Host ("Snapshot created: {0}" -f $copy) -ForegroundColor DarkGray; Open-File-Notepad -Path $copy }
-          else { Write-Host "Snapshot failed." -ForegroundColor Yellow }
-          Pause-UI
-        }
-        '6' { return }   # back to main menu
+        '2' { Try-Open-FirewallLog;  Pause-UI }
+        '3' { Check-BackupStatus -ReportOnly $true }
+        '4' { return }
         default { Write-Host "Invalid option." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
       }
     } catch {
@@ -319,59 +336,73 @@ function Show-LogsMenu {
 }
 
 function Show-MainMenu {
+  Ensure-Dirs
   while ($true) {
     Clear-Host
-    Write-Host "=== Security Framework Menu ===" -ForegroundColor Cyan
-    Write-Host "Root: $Root"
-    Write-Host "Modules path: $ModulesDir"
-    Write-Host ""
-    Write-Host "1) Audit ALL modules"
-    Write-Host "2) Enforce ALL modules"
-    Write-Host "3) Run ONE module"
-    Write-Host "4) Show LAST RUN summary"
-    Write-Host "5) Logs & Reports"
-    Write-Host "6) Exit"
-    Write-Host ""
-
-    $choice = (Read-Host "Select option (1-6)").Trim()
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "    SME SECURITY FRAMEWORK (v1.0)         " -ForegroundColor White
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host " 1.  Audit System (Read-Only)"
+    Write-Host " 2.  Enforce Security Baseline (Admin)"
+    Write-Host " 3.  Run Specific Module"
+    Write-Host " 4.  View Last Report & Score"
+    Write-Host " 5.  Logs & Reports"
+    Write-Host " 6.  Exit"
+    Write-Host "==========================================" -ForegroundColor Cyan
+    
+    $choice = Read-Host " Select Option"
+    
     switch ($choice) {
       '1' { Invoke-Framework -Mode Audit;   Pause-UI }
       '2' { Invoke-Framework -Mode Enforce; Pause-UI }
-      '3' {
-        $mods = @(Get-ModuleNames)
-        if ($mods.Count -eq 0) { Write-Host "No modules found under: $ModulesDir"; Pause-UI; continue }
-
-        Write-Host "`nAvailable modules:" -ForegroundColor Cyan
-        for ($i=0; $i -lt $mods.Count; $i++) { "{0}) {1}" -f ($i+1), $mods[$i].DisplayName | Write-Host }
-
-        $raw = Read-Host "Pick module number"
+      '3' { 
+        $mods = Get-ModuleNames
+        Write-Host "`nAvailable Modules:" -ForegroundColor Yellow
+        for ($i=0; $i -lt $mods.Count; $i++) { Write-Host "  $($i+1). $($mods[$i].DisplayName)" }
+        
+        $raw = Read-Host "Select Module Number"
+        
+        # Input Validation
+        if ([string]::IsNullOrWhiteSpace($raw)) { 
+            Write-Host "No selection made." -ForegroundColor Yellow
+            Pause-UI
+            continue 
+        }
+        
         $sel = 0
-        if (-not [int]::TryParse(($raw.Trim()), [ref]$sel)) { Write-Host "Invalid selection (not a number)." -ForegroundColor Yellow; Pause-UI; continue }
-        if ($sel -lt 1 -or $sel -gt $mods.Count) { Write-Host "Invalid selection (out of range)." -ForegroundColor Yellow; Pause-UI; continue }
-
+        if (-not [int]::TryParse($raw.Trim(), [ref]$sel)) { 
+            Write-Host "Invalid selection (not a number)." -ForegroundColor Yellow
+            Pause-UI
+            continue 
+        }
+        
+        if ($sel -lt 1 -or $sel -gt $mods.Count) { 
+            Write-Host "Selection out of range." -ForegroundColor Yellow
+            Pause-UI
+            continue 
+        }
+        
+        # Ask for Mode
         $chosen = $mods[$sel-1]
-        $modeRaw = Read-Host ("Run mode for '{0}' (Audit/Enforce)" -f $chosen.DisplayName)
-        $mode = ($modeRaw | ForEach-Object { $_.ToString().Trim() }).ToLower()
-
-        switch ($mode) {
-          'audit'   { Invoke-Framework -Mode Audit   -Modules @($chosen.FolderName) }
-          'enforce' { Invoke-Framework -Mode Enforce -Modules @($chosen.FolderName) }
-          default   { Write-Host "Invalid mode. Type Audit or Enforce." -ForegroundColor Yellow }
+        $modeRaw = Read-Host "Run mode for '$($chosen.DisplayName)' (1=Audit, 2=Enforce)"
+        
+        if ($modeRaw -eq '2' -or $modeRaw -eq 'enforce') {
+             Invoke-Framework -Mode Enforce -Modules @($chosen.FolderName)
+        } else {
+             Invoke-Framework -Mode Audit -Modules @($chosen.FolderName)
         }
         Pause-UI
       }
       '4' { Show-LastRunSummary; Pause-UI }
       '5' { Show-LogsMenu }
-      '6' {
-        $ans = (Read-Host "Exit the script and close this PowerShell session? (Y/N)").Trim()
-        if ($ans -match '^(y|Y)') { Exit 0 }
-        else { continue }
-      }
+      '6' { Exit }
+      'Q' { Exit }
+      'q' { Exit }
       default { Write-Host "Invalid option." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
     }
   }
 }
 
 # ------- start
-Ensure-LogsDir
+Ensure-Dirs
 Show-MainMenu

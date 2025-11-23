@@ -182,17 +182,6 @@ function Ensure-FirewallRule {
   if ($changed) { return 'Updated' } else { return 'Unchanged' }
 }
 
-function Test-TeamViewerPresent {
-  try {
-    $paths = @(
-      "$env:ProgramFiles\TeamViewer\TeamViewer.exe",
-      "$env:ProgramFiles(x86)\TeamViewer\TeamViewer.exe"
-    )
-    foreach ($p in $paths) { if (Test-Path $p) { return $p } }
-  } catch { }
-  return $null
-}
-
 function Invoke-Firewall {
   param(
     [Parameter(Mandatory)][ValidateSet('Audit','Enforce')] [string]$Mode,
@@ -266,19 +255,27 @@ function Invoke-Firewall {
         $ruleChanges += $state
       }
 
-      $tvExe = Test-TeamViewerPresent
-      if ($tvExe) {
-        if ($allowTVInbound) {
-          $state = Ensure-FirewallRule -DisplayName 'SF-Allow-TeamViewer-5938' -Direction Inbound -Protocol TCP -LocalPort '5938' -Action Allow -Profile 'Any' -Program $tvExe -Enabled:$true
-          if     ($state -eq 'Created') { $result.details.Add('Rule created: SF-Allow-TeamViewer-5938 (Inbound TCP 5938, TeamViewer).') }
-          elseif ($state -eq 'Updated') { $result.details.Add('Rule updated: SF-Allow-TeamViewer-5938.') }
-          else                          { $result.details.Add('Rule unchanged: SF-Allow-TeamViewer-5938.') }
-          $ruleChanges += $state
-        } else {
-          $result.details.Add( ("TeamViewer detected at {0} but inbound allow is disabled in config." -f $tvExe) )
+      # Dynamic Application Rules from Config
+      if (Test-HasProp $fwCfg 'appRules') {
+        foreach ($app in $fwCfg.appRules) {
+            # Check if enabled in config AND if the file actually exists on disk
+            if ($app.enabled -and (Test-Path $app.path)) {
+                $ruleName = "SF-Allow-$($app.name)"
+                
+                # Create/Update the firewall rule
+                $state = Ensure-FirewallRule -DisplayName $ruleName -Direction Inbound -Protocol $app.protocol -LocalPort $app.port -Action Allow -Profile 'Any' -Program $app.path -Enabled:$true
+                
+                if ($state -eq 'Created') { $result.details.Add("Rule created: $ruleName (Found $($app.name)).") }
+                elseif ($state -eq 'Updated') { $result.details.Add("Rule updated: $ruleName.") }
+                else { $result.details.Add("Rule unchanged: $ruleName.") }
+                
+                $ruleChanges += $state
+            } 
+            elseif ($app.enabled) {
+                # Log if we wanted to enable it but couldn't find the .exe
+                $result.details.Add("App rule skipped: $($app.name) not found at $($app.path).")
+            }
         }
-      } else {
-        $result.details.Add('TeamViewer not detected.')
       }
 
       # Config-driven rules (split the condition to avoid '-and' misparse)

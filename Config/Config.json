@@ -1,4 +1,63 @@
 {
+  "hygiene": {
+    "disableAutorun": true,
+    "removeBloatware": true,
+    "cleanupTempFiles": true,
+    "bloatwareList": [
+      "Microsoft.XboxApp",
+      "Microsoft.ZuneMusic",
+      "Microsoft.ZuneVideo",
+      "Microsoft.MicrosoftSolitaireCollection",
+      "Microsoft.GetHelp",
+      "Microsoft.Getstarted"
+    ]
+  },
+  "hardening": {
+    "enableSmartScreen": true,
+    "blockOfficeMacros": true,
+    "disableWindowsScriptHost": true,
+    "enableAsrRules": true
+  },
+  "bitlocker": {
+    "enableBitLocker": true,
+    "encryptionMethod": "XtsAes256",
+    "backupPath": "C:\\SecurityFramework\\RecoveryKeys"
+  },
+  "logging": {
+    "enableAdvancedAuditing": true,
+    "enablePowerShellLogging": true,
+    "securityLogSizeKB": 204800,
+    "powershellLogSizeKB": 102400
+  },
+  "updates": {
+    "configureAutoUpdate": true,
+    "autoUpdateOption": 4,
+    "noAutoRebootWithUsers": true,
+    "checkForMissingUpdates": true
+  },
+  "defender": {
+    "enableRealTimeMonitoring": true,
+    "enableCloudProtection": true,
+    "enablePuaProtection": true,
+    "enableLsaProtection": true,
+    "enableNetworkProtection": true
+  },
+  "services": {
+    "disableSmb1": true,
+    "disableTelnet": true,
+    "disableRemoteRegistry": true,
+    "enforceRdpNla": true
+  },
+  "accounts": {
+    "minPasswordLength": 12,
+    "maxPasswordAgeDays": 90,
+    "passwordHistoryCount": 24,
+    "lockoutThreshold": 5,
+    "lockoutDurationMins": 15,
+    "lockoutResetMins": 15,
+    "renameAdminAccount": true,
+    "newAdminName": "SmeAdmin"
+  },
   "firewall": {
     "defaultInbound": "Block",
     "defaultOutbound": "Allow",
@@ -8,7 +67,23 @@
     "logDropped": true,
     "logAllowed": false,
 
-    "allowTeamViewerInbound": true, 
+    "appRules": [
+      {
+        "name": "TeamViewer",
+        "path": "C:\\Program Files\\TeamViewer\\TeamViewer.exe",
+        "port": "5938",
+        "protocol": "TCP",
+        "enabled": true
+      },
+      {
+        "name": "TeamViewer-x86",
+        "path": "C:\\Program Files (x86)\\TeamViewer\\TeamViewer.exe",
+        "port": "5938",
+        "protocol": "TCP",
+        "enabled": true
+      }
+    ],
+
     "rules": [
       {
         "name": "SF-Block-SMB-445",
@@ -28,7 +103,6 @@
         "profile": "Any",
         "enabled": true
       }
-      
     ]
   }
 }
