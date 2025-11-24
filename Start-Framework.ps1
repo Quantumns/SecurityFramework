@@ -8,6 +8,9 @@
     Windows PowerShell 5.1 compatible
 #>
 
+# This parameter allows the script to relaunch itself in "Backup Mode"
+param([switch]$BackupOnly)
+
 $ErrorActionPreference  = "Stop"
 $ProgressPreference     = "SilentlyContinue"
 
@@ -27,20 +30,43 @@ function Ensure-Dirs {
     if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null }
 }
 
+function Test-IsAdmin {
+  $wi = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $wp = New-Object Security.Principal.WindowsPrincipal($wi)
+  return $wp.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+
 function Invoke-Backup {
     Ensure-Dirs
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $currentBackup = Join-Path $BackupDir $timestamp
     
     try {
+        Write-Host "`n[BACKUP] Initiating System Rollback Protection..." -ForegroundColor Cyan
+        
+        # 1. Create Windows System Restore Point
+        try {
+            Write-Host "   [*] Creating Windows System Restore Point..." -NoNewline
+            # Note: Checkpoint-Computer requires Admin.
+            Checkpoint-Computer -Description "SecurityFramework Pre-Enforce $timestamp" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
+            Write-Host " [OK]" -ForegroundColor Green
+        } catch {
+            # Capture specific error if it's the 24-hour limit or permissions
+            $err = $_.Exception.Message
+            if ($err -match "frequency") {
+                Write-Host " [SKIPPED]" -ForegroundColor Yellow
+                Write-Host "      Info: A Restore Point was already created recently (Windows limits this to 1 per 24h)." -ForegroundColor Gray
+            } else {
+                Write-Host " [FAILED]" -ForegroundColor Red
+                Write-Host "      Warning: $err" -ForegroundColor Yellow
+            }
+        }
+
+        # 2. Create File Backup
         if (-not (Test-Path $currentBackup)) { New-Item -Path $currentBackup -ItemType Directory -Force | Out-Null }
         
-        Write-Host "`n[BACKUP] Creating system rollback point..." -ForegroundColor Cyan
-        
-        # 1. Export Firewall Rules (JSON)
         Get-NetFirewallRule | Select-Object DisplayName, Enabled, Direction, Action, Profile | ConvertTo-Json -Depth 2 | Out-File (Join-Path $currentBackup "FirewallRules.json")
         
-        # 2. Export Critical Registry Keys (Reg Export)
         $regExports = @(
             @{ Name="AuditPol";  Path="HKLM\SECURITY\Policy\PolAdtEv" },
             @{ Name="Lsa";       Path="HKLM\SYSTEM\CurrentControlSet\Control\Lsa" },
@@ -52,12 +78,11 @@ function Invoke-Backup {
             Start-Process "reg.exe" -ArgumentList "export `"$($reg.Path)`" `"$outFile`" /y" -Wait -WindowStyle Hidden
         }
         
-        Write-Host "   [OK] Rollback saved to: Backups\$timestamp" -ForegroundColor Green
+        Write-Host "   [OK] Backup tracking folder created: $timestamp" -ForegroundColor Green
         Start-Sleep -Seconds 1
         return $true
     } catch {
-        Write-Host "   [ERROR] Backup failed: $($_.Exception.Message)" -ForegroundColor Red
-        Pause-UI
+        Write-Host "   [ERROR] Backup process failed: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -66,7 +91,6 @@ function Check-BackupStatus {
     param([bool]$ReportOnly = $false)
     Ensure-Dirs
     
-    # Find newest backup folder
     $lastBackup = Get-ChildItem $BackupDir -Directory | Sort-Object Name -Descending | Select-Object -First 1
     
     if ($ReportOnly) {
@@ -75,9 +99,7 @@ function Check-BackupStatus {
             try {
                 $backupDate = [DateTime]::ParseExact($lastBackup.Name, "yyyyMMdd-HHmmss", $null)
                 $daysAgo = ((Get-Date) - $backupDate).Days
-                Write-Host "Last Backup: $($lastBackup.Name)"
-                Write-Host "Age:         $daysAgo days ago"
-                Write-Host "Location:    $($lastBackup.FullName)"
+                Write-Host "Last Backup: $($lastBackup.Name) ($daysAgo days ago)"
             } catch {
                 Write-Host "Last Backup: $($lastBackup.Name) (Invalid Date Format)"
             }
@@ -88,51 +110,49 @@ function Check-BackupStatus {
         return
     }
 
-    # --- ENFORCE MODE LOGIC ---
-    $shouldCreate = $true
-    
+    # --- LOGIC START ---
+    $shouldBackup = $true 
+
     if ($lastBackup) {
         try {
             $backupDate = [DateTime]::ParseExact($lastBackup.Name, "yyyyMMdd-HHmmss", $null)
             $daysAgo = ((Get-Date) - $backupDate).Days
             
-            Write-Host "`n[INFO] Last rollback point found: $daysAgo days ago ($($lastBackup.Name))" -ForegroundColor Cyan
-            
-            if ($daysAgo -lt 1) {
-                # Very recent backup (today)
-                $ans = Read-Host "Create ANOTHER backup before continuing? (y/N)"
-                if ($ans -ne 'y') { $shouldCreate = $false }
+            if ($daysAgo -lt 30) {
+                Write-Host "`n[INFO] Recent backup found ($daysAgo days ago)." -ForegroundColor Green
+                $ans = Read-Host "Create a NEW backup anyway? (y/N)"
+                if ($ans -ne 'y') { $shouldBackup = $false }
             } else {
-                # Backup exists but is older than 1 day
-                $ans = Read-Host "Create a NEW backup now? (Y/n)"
-                if ($ans -eq 'n') { $shouldCreate = $false }
+                Write-Host "`n[WARN] No backup found in the last 30 days." -ForegroundColor Yellow
+                $ans = Read-Host "Create backup now? (Y/n)"
+                if ($ans -eq 'n') { $shouldBackup = $false }
             }
         } catch {
-            # Corrupt folder name
-            Write-Host "`n[WARN] Last backup folder has invalid name format." -ForegroundColor Yellow
-            $ans = Read-Host "Create a fresh backup now? (Y/n)"
-            if ($ans -eq 'n') { $shouldCreate = $false }
+            Write-Host "`n[WARN] Could not verify last backup date." -ForegroundColor Yellow
+            $ans = Read-Host "Create backup now? (Y/n)"
+            if ($ans -eq 'n') { $shouldBackup = $false }
         }
     } else {
-        # No backup at all
-        Write-Host "`n[WARN] NO PREVIOUS BACKUPS FOUND." -ForegroundColor Red
-        Write-Host "       It is highly recommended to create a rollback point." -ForegroundColor Yellow
+        Write-Host "`n[WARN] No previous backups found." -ForegroundColor Yellow
         $ans = Read-Host "Create backup now? (Y/n)"
-        if ($ans -eq 'n') { $shouldCreate = $false }
+        if ($ans -eq 'n') { $shouldBackup = $false }
     }
 
-    if ($shouldCreate) {
-        Invoke-Backup
+    if ($shouldBackup) {
+        # THIS is the fix: Elevation logic is now correctly inside the function
+        if (Test-IsAdmin) {
+            Invoke-Backup | Out-Null
+        } else {
+            Write-Host "`n[INFO] Elevation required to create System Restore Point." -ForegroundColor Yellow
+            Write-Host "       Launching elevated backup window..." -ForegroundColor Cyan
+            
+            $self = $PSCommandPath
+            Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$self`" -BackupOnly" -Wait
+        }
     }
 }
 
 function Pause-UI { [void](Read-Host "Press Enter to continue...") }
-
-function Test-IsAdmin {
-  $wi = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $wp = New-Object Security.Principal.WindowsPrincipal($wi)
-  return $wp.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
-}
 
 function Get-ModuleNames {
   $list = @()
@@ -159,24 +179,22 @@ function Invoke-Framework {
   if (-not (Test-Path $Framework)) { Write-Error "Framework.ps1 not found at $Framework"; return }
   if (-not (Test-Path $ConfigPath)) { Write-Error "Config not found at $ConfigPath"; return }
 
-  # 1. Elevation Check
+  # 1. Handle Backups FIRST (Regardless of Admin status)
+  if ($Mode -eq 'Enforce') {
+      # This function handles its own prompts and elevation if needed
+      Check-BackupStatus 
+  }
+
+  # 2. Elevation Check for the Main Framework
   if ($Mode -eq 'Enforce') {
       if (-not (Test-IsAdmin)) {
         Write-Host "[INFO] Elevation required for Enforcement. Launching new window..." -ForegroundColor Yellow
-        
-        # We build the command string manually to ensure the pause happens inside the new window
         $cmdString = "-NoProfile -ExecutionPolicy Bypass -Command `& '$Framework' -Mode $Mode -Config '$ConfigPath'"
         if ($Modules.Count -gt 0) { $cmdString += " -Modules " + ($Modules -join ',') }
         
-        # APPEND THE PAUSE HERE
-        $cmdString += "; Write-Host ''; Read-Host 'Press Enter to close this window...'"
-
         Start-Process powershell -Verb RunAs -ArgumentList $cmdString -Wait
         return
       }
-      
-      # 2. Automatic Rollback (Only runs if Admin)
-      Invoke-RestorePoint
   }
 
   # 3. Run Framework (Standard execution)
@@ -191,12 +209,6 @@ function Invoke-Framework {
   $modLabel = if ($Modules.Count) { '[' + ($Modules -join ',') + ']' } else { '[All Modules]' }
   Write-Host "[RUN] $Mode $modLabel" -ForegroundColor Cyan
   & powershell @cmd
-  
-  # 4. Keep window open if we just ran an enforcement (for the current window)
-  if ($Mode -eq 'Enforce') {
-      Write-Host "`n[INFO] Process Complete." -ForegroundColor Green
-      Pause-UI
-  }
 }
 
 function Get-HKStyleScore {
@@ -212,20 +224,23 @@ function Get-HKStyleScore {
     switch ($m.outcome) {
       'Compliant'          { $points += 4 }
       'Already Compliant'  { $points += 4 }
-      'Applied'            { $points += 2 }
-      'Partial'            { $points += 1 }
+      'Applied'            { $points += 4 } # Full points for enforcement
+      'Partial'            { $points += 2 }
       'Non-Compliant'      { $points += 0 }
       'Failed'             { $points += 0 }
       default              { $points += 0 }
     }
   }
 
-  $score = [Math]::Round((($points / $maxPts) * 5) + 1, 1)
+  $score = 0
+  if ($maxPts -gt 0) {
+      $score = [Math]::Round((($points / $maxPts) * 5) + 1, 1)
+  }
 
   $ratingCasual, $ratingPro =
-    if     ($score -ge 5.5) { "Excellent","Excellent" }
-    elseif ($score -ge 4.5) { "Well done","Good" }
-    elseif ($score -ge 3.5) { "Sufficient","Sufficient" }
+    if     ($score -ge 5.5) { "! Secure & Loaded !","Excellent" }
+    elseif ($score -ge 4.5) { "Great Job","Strong" }
+    elseif ($score -ge 3.5) { "Does the job","Sufficient" }
     elseif ($score -ge 2.5) { "You should do better","Insufficient" }
     elseif ($score -ge 1.5) { "Weak","Insufficient" }
     else                    { "Bogus","Insufficient" }
@@ -242,6 +257,7 @@ function Get-HKStyleScore {
 }
 
 function Show-LastRunSummary {
+  Clear-Host
   if (-not (Test-Path $LogsDir)) { Write-Host "No logs folder found."; return }
   $last = Get-ChildItem $LogsDir -Filter *.json -ErrorAction SilentlyContinue |
           Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -268,8 +284,8 @@ function Show-LastRunSummary {
     $pts  = switch ($out) {
       'Compliant'          { 4 }
       'Already Compliant'  { 4 }
-      'Applied'            { 2 }
-      'Partial'            { 1 }
+      'Applied'            { 4 }
+      'Partial'            { 2 }
       'Non-Compliant'      { 0 }
       'Failed'             { 0 }
       'Skipped'            { '-' }
@@ -330,7 +346,7 @@ function Show-LogsMenu {
           Pause-UI
         }
         '2' { Try-Open-FirewallLog;  Pause-UI }
-        '3' { Check-BackupStatus -ReportOnly $true }
+        '3' { Check-BackupStatus; Pause-UI }
         '4' { return }
         default { Write-Host "Invalid option." -ForegroundColor Yellow; Start-Sleep -Seconds 1 }
       }
@@ -360,7 +376,7 @@ function Show-MainMenu {
     
     switch ($choice) {
       '1' { Invoke-Framework -Mode Audit;   Pause-UI }
-      '2' { Invoke-Framework -Mode Enforce; Pause-UI }
+      '2' { Invoke-Framework -Mode Enforce }
       '3' { 
         $mods = Get-ModuleNames
         Write-Host "`nAvailable Modules:" -ForegroundColor Yellow
@@ -396,8 +412,8 @@ function Show-MainMenu {
              Invoke-Framework -Mode Enforce -Modules @($chosen.FolderName)
         } else {
              Invoke-Framework -Mode Audit -Modules @($chosen.FolderName)
+             Pause-UI 
         }
-        Pause-UI
       }
       '4' { Show-LastRunSummary; Pause-UI }
       '5' { Show-LogsMenu }
@@ -411,4 +427,22 @@ function Show-MainMenu {
 
 # ------- start
 Ensure-Dirs
-Show-MainMenu
+
+# This logic handles the "Backup Mode" execution flow
+if ($BackupOnly) {
+    try {
+        Invoke-Backup | Out-Null
+        # Verification Step
+        Write-Host "`n[VERIFICATION] Checking for recent Restore Points..." -ForegroundColor Cyan
+        Get-ComputerRestorePoint | Select-Object -Last 1 | Format-Table -AutoSize
+    }
+    catch {
+        Write-Error $_
+    }
+    finally {
+        Write-Host "`nPress Enter to close this window..."
+        Read-Host
+    }
+} else {
+    Show-MainMenu
+}

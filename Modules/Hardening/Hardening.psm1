@@ -55,10 +55,10 @@ function Invoke-Hardening {
       }
     }
 
-    # 2. Block Office Macros from Internet
-    # Thesis specifies HKCU. Note: This applies to current user context.
+    # 2. Block Office Macros from Internet (System-Wide via HKLM)
     if ($cfg.blockOfficeMacros) {
-      $wordKey = "HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security"
+      # Use HKLM to enforce for ALL users on this machine
+      $wordKey = "HKLM:\SOFTWARE\Policies\Microsoft\Office\16.0\Word\Security"
       $valName = "BlockContentExecutionFromInternet"
       
       $currVal = (Get-ItemProperty -Path $wordKey -Name $valName -ErrorAction SilentlyContinue).$valName
@@ -67,12 +67,12 @@ function Invoke-Hardening {
         if ($Mode -eq 'Enforce') {
            if (-not (Test-Path $wordKey)) { New-Item -Path $wordKey -Force | Out-Null }
            Set-ItemProperty -Path $wordKey -Name $valName -Value 1 -Type DWord -Force
-           $result.details.Add("Blocked Office Macros from Internet (Word).")
+           $result.details.Add("Blocked Office Macros from Internet (System-Wide).")
         } else {
-           $result.details.Add("Audit: Office Macros from Internet are ALLOWED (Risk).")
+           $result.details.Add("Audit: Office Macros from Internet are NOT blocked system-wide.")
         }
       } else {
-         $result.details.Add("Office Macro restrictions are active.")
+         $result.details.Add("Office Macro restrictions are active (System-Wide).")
       }
     }
 

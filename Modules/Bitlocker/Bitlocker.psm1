@@ -1,10 +1,5 @@
 <#
   BitLocker.psm1 - SecurityFramework
-  Implements Thesis Section 3.2.7: Data Protection (BitLocker)
-  - Checks for TPM availability
-  - Enables BitLocker on C: Drive (XTS-AES 256)
-  - Backs up Recovery Key to a local secure folder
-  - Handles unsupported hardware gracefully
 #>
 
 function Invoke-BitLocker {
@@ -24,68 +19,51 @@ function Invoke-BitLocker {
 
   $cfg = $Config.bitlocker
   if (-not $cfg) {
-    $result.outcome = 'Failed'
-    $result.details.Add("Error: 'bitlocker' section missing in Config.json")
-    return $result
+    $result.outcome = 'Failed'; $result.details.Add("Config missing"); return $result
   }
 
   try {
-    # 1. Check Hardware Support (TPM)
-    $tpm = Get-Tpm -ErrorAction SilentlyContinue
-    $tpmReady = ($tpm -and $tpm.TpmPresent -and $tpm.TpmReady)
-    
-    if (-not $tpmReady) {
-        $result.outcome = 'Skipped'
-        $result.details.Add("Skipped: TPM chip not found or not ready. BitLocker cannot be automated safely.")
-        return $result
-    }
-
-    # 2. Check BitLocker Status on C:
+    # 1. Check BitLocker Status on C: FIRST
     $vol = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue
+    
     if (-not $vol) {
+        # If we can't read status (e.g. not Admin), we can't determine compliance
         $result.outcome = 'Failed'
-        $result.details.Add("Error: Could not retrieve BitLocker status for C: drive.")
+        $result.details.Add("Error: Access denied or C: drive not found. (Run as Admin)")
         return $result
     }
 
-    # Check Encryption Status
-    # ProtectionStatus: 0 = Off, 1 = On
+    # Check Encryption Status (ProtectionStatus: 1 = On)
     if ($vol.ProtectionStatus -eq 1) {
-        # Verify Encryption Method
-        if ($vol.EncryptionMethod -eq $cfg.encryptionMethod) {
-             $result.details.Add("BitLocker is active and compliant ($($vol.EncryptionMethod)).")
-        } else {
-             $result.details.Add("Audit: BitLocker is active but uses $($vol.EncryptionMethod) (Expected $($cfg.encryptionMethod)).")
-             # Note: We do not auto-change encryption method as it requires decrypt/re-encrypt (dangerous for script)
-        }
-    } else {
-        # BitLocker is OFF
-        if ($Mode -eq 'Enforce' -and $cfg.enableBitLocker) {
-            # Ensure Backup Directory Exists
-            if (-not (Test-Path $cfg.backupPath)) {
-                New-Item -ItemType Directory -Force -Path $cfg.backupPath | Out-Null
-            }
+        $result.details.Add("BitLocker is active and compliant ($($vol.EncryptionMethod)).")
+        $result.outcome = 'Compliant' # Explicitly set success here
+    } 
+    else {
+        # 2. Only check TPM if we need to ENABLE BitLocker
+        $tpm = Get-Tpm -ErrorAction SilentlyContinue
+        $tpmReady = ($tpm -and $tpm.TpmPresent -and $tpm.TpmReady)
 
-            # Enable BitLocker
-            # -UsedSpaceOnly is faster for new deployments
-            # -SkipHardwareTest prevents hanging on reboot check (optional, but good for automation)
-            Enable-BitLocker -MountPoint "C:" `
-               -EncryptionMethod $cfg.encryptionMethod `
-               -UsedSpaceOnly `
-               -TpmProtector `
-               -ErrorAction Stop
+        if (-not $tpmReady) {
+            $result.outcome = 'Skipped'
+            $result.details.Add("Audit: BitLocker is OFF. Skipped enforcement because TPM is missing/not ready.")
+            return $result
+        }
+
+        # BitLocker is OFF, TPM is ON -> We can Enforce
+        if ($Mode -eq 'Enforce' -and $cfg.enableBitLocker) {
+            if (-not (Test-Path $cfg.backupPath)) { New-Item -ItemType Directory -Force -Path $cfg.backupPath | Out-Null }
+
+            Enable-BitLocker -MountPoint "C:" -EncryptionMethod $cfg.encryptionMethod -UsedSpaceOnly -TpmProtector -ErrorAction Stop
 
             # Backup Key
             $keyId = (Get-BitLockerVolume -MountPoint "C:").KeyProtector | Where-Object {$_.KeyProtectorType -eq 'RecoveryPassword'} | Select-Object -ExpandProperty KeyProtectorId
             if ($keyId) {
                Backup-BitLockerKeyProtector -MountPoint "C:" -KeyProtectorId $keyId -Path $cfg.backupPath
-               $result.details.Add("Enabled BitLocker. Recovery Key backed up to $($cfg.backupPath).")
+               $result.details.Add("Enabled BitLocker. Key saved to $($cfg.backupPath).")
             } else {
-               # Try to add a recovery password if one doesn't exist
                Add-BitLockerKeyProtector -MountPoint "C:" -RecoveryPasswordProtector
-               $result.details.Add("Enabled BitLocker (Added new Recovery Protector).")
+               $result.details.Add("Enabled BitLocker (New Recovery Protector added).")
             }
-
         } else {
             $result.details.Add("Audit: BitLocker is DISABLED (Critical Risk).")
         }
@@ -96,9 +74,9 @@ function Invoke-BitLocker {
     $anyFixes  = ($result.details | Where-Object { $_ -match "Enabled" }).Count -gt 0
 
     if ($Mode -eq 'Audit') {
-      if ($anyIssues) { $result.outcome = 'Non-Compliant' } else { $result.outcome = 'Compliant' }
+      if ($anyIssues) { $result.outcome = 'Non-Compliant' } elseif (-not $result.outcome) { $result.outcome = 'Compliant' }
     } else {
-      if ($anyFixes) { $result.outcome = 'Applied' } else { $result.outcome = 'Already Compliant' }
+      if ($anyFixes) { $result.outcome = 'Applied' } elseif (-not $result.outcome) { $result.outcome = 'Already Compliant' }
     }
 
   } catch {
