@@ -1,55 +1,136 @@
-SME Security Framework
+<div align="center">
 
-A PowerShell-based automation tool designed to secure Windows computers in Small and Medium-sized Enterprises (SMEs). It applies industry-standard security controls (CIS & Microsoft Baselines) automatically.
+# 🛡️ SME Security Framework
 
-Key Features
+### Automated Endpoint Hardening & Compliance for Small/Medium Enterprises
 
-One-Click Hardening: Automatically applies security settings.
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue?style=flat&logo=powershell)
+![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11_Pro-blue?style=flat&logo=windows)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Status](https://img.shields.io/badge/Status-Stable-success)
 
-Safety First: Creates a Windows System Restore Point before making any changes.
+</div>
 
-Audit Mode: Checks your system security without modifying it.
+---
 
-Modular: Includes specific modules for Firewall, BitLocker, Updates, and more.
+### 📖 Overview
 
-No Dependencies: Works on standard Windows 10/11 using built-in PowerShell.
+**SME Security Framework** is a modular, PowerShell-based automation tool designed to secure Windows computers in Small and Medium-sized Enterprises (SMEs). 
 
-Included Modules
+Unlike complex enterprise tools that require dedicated servers, this framework runs locally on standard laptops and desktops to apply industry-standard security controls (**CIS Benchmarks** & **Microsoft Security Baselines**) automatically.
 
-Accounts: Enforces password policies and disables Guest account.
+It bridges the gap between complex security standards and limited IT resources by offering **One-Click Hardening**, **Dual-Layer Safety**, and **Smart Scoring**.
 
-Services: Disables risky protocols like SMBv1 and Telnet.
+<br>
 
-Defender: Enables Antivirus Real-time monitoring and Cloud protection.
+### ✨ Key Features
 
-Firewall: Blocks inbound traffic and high-risk ports.
+* **🚀 One-Click Hardening:** Automatically applies security settings for Firewall, BitLocker, Defender, and more.
+* **🛡️ Dual-Layer Backup:** * **Layer 1:** Creates a native Windows System Restore Point.
+    * **Layer 2:** Exports file-based backups of critical Registry keys and Firewall rules to JSON.
+* **🧠 Smart Enforcement:** Idempotent modules only apply changes when necessary. 
+* **📊 Weighted Scoring:** Uses an advanced algorithm to rate security posture from "Weak" to "Secure & Loaded".
+* **🏢 Business Continuity:** Includes configurable exceptions for critical tools (e.g., **TeamViewer** on Port 5938).
 
-Updates: Configures automatic Windows Updates.
+<br>
 
-Logging: Enables advanced auditing for forensic analysis.
+### 🖼️ The Interface
 
-BitLocker: Encrypts the hard drive (if TPM is present).
+The framework uses a menu-driven interface for ease of use.
 
-Hardening: Blocks Office Macros and malicious scripts.
+**Main Menu:**
+<br>
+![Main Menu Screenshot](https://github.com/Quantumns/SecurityFramework/blob/ca759a0506ac4500a4032e24b9f9747dc033d87b/Menu.jpeg)
+<br>
+*Select Audit to check status or Enforce to apply fixes.*
 
-Hygiene: Removes bloatware and cleans temporary files.
+<br>
 
-How to Use
+**Module Selection:**
+<br>
+![Module Selection Screenshot](https://github.com/Quantumns/SecurityFramework/blob/ca759a0506ac4500a4032e24b9f9747dc033d87b/Module%20Selection.jpeg)
+<br>
+*Target specific areas like Firewall or BitLocker individually.*
 
-Right-click Start-Framework.ps1.
+<br>
 
-Select "Run with PowerShell".
+**Logs & Reports:**
+<br>
+![Logs Menu Screenshot](https://github.com/Quantumns/SecurityFramework/blob/ca759a0506ac4500a4032e24b9f9747dc033d87b/Logs%20%26%20Reports.jpeg)
+<br>
+*Instantly review past compliance logs, monitor live firewall activity, and verify system rollback status.*
 
-Choose an option from the menu:
+<br>
 
-Audit: To see what is wrong.
+### ⚙️ How To Run
 
-Enforce: To fix it (Requires Admin).
+1.  **Download** the repository to your target machine.
+2.  **Unblock** the file (PowerShell security requirement):
+    ```powershell
+    Unblock-File .\Start-Framework.ps1
+    ```
+3.  **Run** the menu launcher:
+    ```powershell
+    .\Start-Framework.ps1
+    ```
 
-Configuration
+> **Note:** For full enforcement features, run PowerShell as **Administrator**. The tool will automatically prompt for elevation if required.
 
-You can change settings (like allowed ports or password length) in Config\Config.json.
+<br>
 
-Disclaimer
+### 🛠️ Modules Included
 
-This tool modifies system settings. Always test in a safe environment first. The tool automatically attempts to create a Restore Point before enforcement.
+| Module | Description | CIS Mapping |
+| :--- | :--- | :--- |
+| **Accounts** | Enforces password complexity, lockout policies, and disables Guest. | 5.2, 5.3 |
+| **Services** | Disables risky legacy protocols like SMBv1 and Telnet. | 4.8 |
+| **Defender** | Enables Real-time Monitoring, Cloud Protection (MAPS), and PUA blocks. | 10.1, 10.2 |
+| **Firewall** | Enforces "Default Deny" inbound rules and blocks high-risk ports (445, 23). | 4.4, 4.5 |
+| **Updates** | Configures automatic Windows Update installation schedules. | 7.1, 7.3 |
+| **Logging** | Enables advanced auditing (Process Creation, Logon) for forensic analysis. | 8.2, 8.5 |
+| **BitLocker** | Encrypts the system drive using XTS-AES 256 (if TPM is present). | 3.6, 3.11 |
+| **Hardening** | Blocks Office Macros from internet and enables Attack Surface Reduction (ASR). | 9.2, 16.7 |
+| **Hygiene** | Removes bloatware (e.g., Xbox, Solitaire) and cleans temporary files. | 4.7, 4.10 |
+
+<br>
+
+### 📈 Scoring & Rating System
+
+The framework calculates a **Security Score** based on the number of compliant modules. It awards full points for modules that were successfully fixed ("Applied") during the run.
+
+| Score | Rating (Casual) | Rating (Professional) |
+| :---: | :--- | :--- |
+| **6.0** | 🚀 **! Secure & Loaded !** | Excellent |
+| **5.0** | 🛡️ **Great Job** | Strong |
+| **4.0** | ✅ **Does the job** | Sufficient |
+| **3.0** | ⚠️ **You should do better** | Insufficient |
+| **2.0** | 🚧 **Weak** | Insufficient |
+| **1.0** | ❌ **Bogus** | Insufficient |
+
+*Formula: `(Points Achieved / Maximum Points) * 5 + 1`*
+
+<br>
+
+### 🔧 Configuration
+
+You can customize settings in `Config\Config.json` to fit your business needs.
+
+**Example: Allow specific apps through Firewall**
+```json
+"firewall": {
+  "appRules": [
+    {
+      "name": "TeamViewer",
+      "path": "C:\\Program Files\\TeamViewer\\TeamViewer.exe",
+      "port": "5938",
+      "enabled": true
+    }
+  ]
+}
+
+⚠️ Disclaimer
+This tool modifies system configurations. While it includes a Dual-Layer Backup mechanism, always test in a safe environment (VM) before deploying to production systems.
+
+Developed for the Bachelor Thesis: "Securing Computers in Small-Sized Enterprises"
+
+Vistula University - 2025
