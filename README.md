@@ -34,6 +34,14 @@ It bridges the gap between complex security standards and limited IT resources b
 
 <br>
 
+### 🛣️ The Workflow
+
+The framework follows a strict 5-step "Road to Resilience" to ensure safety and compliance before any changes are made:
+
+![Security Framework Roadmap](https://github.com/Quantumns/SecurityFramework/blob/9b75efdc608814861920d5214628a7d68457547c/Road%20to%20resilience.png)
+
+<br>
+
 ### 🖼️ The Interface
 
 The framework uses a menu-driven interface for ease of use.
