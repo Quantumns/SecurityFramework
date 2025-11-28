@@ -70,7 +70,18 @@ function Invoke-Updates {
     } else {
       $result.details.Add("Windows Update Service is healthy.")
     }
-
+# 2.5. Trigger Native Update Scan (Enforce Mode)
+    # Uses built-in USOClient to start the scan immediately without 3rd party tools
+    if ($Mode -eq 'Enforce') {
+        try {
+            Start-Process -FilePath "usoclient.exe" -ArgumentList "StartScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
+            $result.details.Add("Triggered native background update scan via USOClient.")
+        } catch {
+            $result.details.Add("Warning: Failed to trigger USOClient.")
+        }
+    }
+    # --------------------------------
+    
     # 3. Check for Missing Updates (Native COM Object)
     # This aligns with "Vulnerability Management" (CIS 7.1)
     if ($cfg.checkForMissingUpdates) {
